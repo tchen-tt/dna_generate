@@ -1,6 +1,22 @@
+# Jupyter notebooks
 diffusion_generate_dna.ipynb
+.ipynb_checkpoints/
+
+# Reports
 report.docx
 report.md
 report.tex
 ~$report.docx
+
+# Development notes
 CODE_IMPROVEMENTS.md
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Model checkpoints (optional - remove this line if you want to push checkpoints)
+checkpoints/
