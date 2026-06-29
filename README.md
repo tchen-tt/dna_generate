@@ -1,82 +1,162 @@
-# diffusion_generate
+# DNA-Diffusion
 
-DNA-Diffusion 模型的重新实现，修复了原始代码中的已知 bug，去除 Hydra 依赖，使用标准 argparse，结构更清晰。
+A diffusion model for generating cell-type-specific regulatory DNA sequences. This project implements a UNet-based denoising diffusion probabilistic model (DDPM) with classifier-free guidance to generate synthetic 200bp DNA sequences conditioned on cell type.
 
-## 文件结构
+## Features
 
-```
-diffusion_generate/
-├── layers.py       # 神经网络基础模块（Block、ResnetBlock、Attention 等）
-├── unet.py         # UNet 架构
-├── diffusion.py    # DDPM 扩散模型包装器
-├── dataloader.py   # 数据加载与预处理
-├── utils.py        # 工具函数
-├── train.py        # 训练入口
-└── infer.py        # 推理入口
-```
+- **Conditional Generation**: Generate DNA sequences for specific cell types (K562, hESCT0, HepG2, GM12878)
+- **Classifier-Free Guidance**: Control generation quality with guidance scale parameter
+- **Attention Mechanism**: Cross-attention between sequence and cell-type embeddings
+- **Quality Evaluation**: Comprehensive metrics including GC content, k-mer frequencies, and diversity analysis
 
-## 快速开始
-
-### 训练
+## Installation
 
 ```bash
-cd diffusion_generate
+# Install dependencies
+pip install -r requirements.txt
+```
 
-# 使用默认参数训练
+## Usage
+
+### Training
+
+Train the diffusion model on DNA sequence data:
+
+```bash
+# Basic training
 python train.py
 
-# 使用缓存的预处理数据（推荐）
-python train.py --load-saved-data
+# Debug mode (single sequence for fast iteration)
+python train.py --debug
 
-# 调试模式（单条序列，快速验证逻辑）
-python train.py --debug --num-epochs 10 --min-epochs 0
-
-# 自定义超参数
+# Custom configuration
 python train.py \
+  --data-path data/sequences.txt \
   --batch-size 64 \
-  --lr 5e-5 \
   --num-epochs 3000 \
-  --min-epochs 1000 \
-  --precision bf16 \
-  --use-wandb
+  --lr 1e-4 \
+  --timesteps 50
 ```
 
-### 推理
+**Key arguments:**
+- `--data-path`: Path to training data (TSV format with columns: chr, sequence, TAG)
+- `--batch-size`: Batch size for training (default: 120)
+- `--num-epochs`: Maximum training epochs (default: 5000)
+- `--min-epochs`: Minimum epochs before early stopping (default: 2000)
+- `--patience`: Early stopping patience (default: 10)
+- `--precision`: Training precision, "fp32" or "bf16" (default: bf16)
+- `--use-wandb`: Enable Weights & Biases logging
+
+### Inference
+
+Generate DNA sequences from a trained checkpoint:
 
 ```bash
-# 生成所有细胞类型的序列
-python infer.py --checkpoint checkpoints/model_epoch999_step12000_val0.0123.pt
+# Generate for all cell types in checkpoint
+python infer.py --checkpoint checkpoints/model_best.pt
 
-# 只生成指定细胞类型
+# Generate for specific cell types
 python infer.py \
-  --checkpoint checkpoints/model.pt \
-  --cell-types K562 HepG2
+  --checkpoint checkpoints/model_best.pt \
+  --cell-types K562 HepG2 \
+  --num-samples 1000
 
-# 调整引导强度和数量
+# Adjust guidance strength
 python infer.py \
-  --checkpoint checkpoints/model.pt \
-  --cond-weight 7.0 \
-  --num-samples 1000 \
-  --sample-bs 20
-
-# 保存交叉注意力图
-python infer.py \
-  --checkpoint checkpoints/model.pt \
-  --save-attention
+  --checkpoint checkpoints/model_best.pt \
+  --cond-weight 1.0 \
+  --num-samples 500
 ```
 
-输出文件写入 `../data/outputs/{cell_type}.txt`，FASTA 格式。
+**Key arguments:**
+- `--checkpoint`: Path to trained model checkpoint (.pt file)
+- `--cell-types`: Cell types to generate (default: all types in checkpoint)
+- `--num-samples`: Number of sequences per cell type (default: 1000)
+- `--cond-weight`: Classifier-free guidance scale (default: 1.0, higher = stronger conditioning)
+- `--output-dir`: Output directory for generated sequences (default: ../data/outputs)
+- `--save-attention`: Save cross-attention maps
 
-## 相比原始实现的修复
+**Output:** Generated sequences are saved as FASTA files in `output-dir/{cell_type}.txt`
 
-| 位置 | 问题 | 修复 |
-|------|------|------|
-| `train.py` | `rank_0 == 0`（bool 与 int 比较），单卡时 W&B 日志和周期采样永不触发 | 改为 `if is_main` |
-| `train.py` | 验证循环未调用 `model.eval()` | 验证前 `model.eval()`，训练前 `model.train()` |
-| `train_util.py` | `precision=bf16` 时输入 `x` 仍被强制转为 `float32` | `x.to(device, dtype=dtype)` 正确遵循 precision |
-| `utils.py` | `extract()` 中 `result.to(device)` 是空操作（返回值未赋值） | `result = result.to(device)` |
-| `diffusion.py` | `classes=None` 时 `p_sample_loop` 尝试解包单值，引发 `ValueError` | `_p_sample_uncond` 始终返回 `(tensor, None)` 元组 |
-| `unet.py` | `channels` 构造参数被硬编码 `channels = 1` 覆盖 | 移除覆盖，使用传入值 |
-| `unet.py` | `label_emb(classes)` 被调用 4 次（相同计算重复执行） | 计算一次，结果加到共享 `t` |
-| `layers.py` | `ResnetBlock` 的 FiLM 调制只作用于第一个子 Block | 两个子 Block 都应用 `scale_shift` |
-| `dataloader.py` | `T.ToTensor()` 对 float 数组行为未定义（设计用于 uint8） | 直接用 `torch.from_numpy()` + `unsqueeze(1)` |
+### Evaluation
+
+Evaluate quality of generated sequences:
+
+```bash
+# Evaluate all cell types in output directory
+python evaluate.py \
+  --data-path data/sequences.txt \
+  --output-dir data/outputs \
+  --plot
+
+# Evaluate specific cell types
+python evaluate.py \
+  --data-path data/sequences.txt \
+  --output-dir data/outputs \
+  --cell-types K562 HepG2 \
+  --plot
+```
+
+**Key arguments:**
+- `--data-path`: Path to original training data (for comparison)
+- `--output-dir`: Directory containing generated sequences
+- `--cell-types`: Cell types to evaluate (default: all .txt files in output-dir)
+- `--plot`: Generate visualization plots (default: True)
+
+**Evaluation metrics:**
+1. **GC Content**: Distribution comparison between real and generated sequences
+2. **k-mer Frequency**: Pearson correlation for 1-mer, 2-mer, and 4-mer frequencies
+3. **Duplication Rate**: Internal duplicates and overlap with training set
+4. **Diversity**: Hamming distance distribution among generated sequences
+
+**Output:** Evaluation results printed to console, plots saved to `output-dir/plots/`
+
+## Data Format
+
+Training data should be a tab-separated file with columns:
+- `chr`: Chromosome identifier (chr1=test, chr2=validation, others=training)
+- `sequence`: DNA sequence (200bp, ACGT only, no N's)
+- `TAG`: Cell type label
+
+Example:
+```
+chr	sequence	TAG
+chr3	ATCGATCG...	K562_ENCLB843GMH
+chr4	GCTAGCTA...	HepG2_ENCLB029COU
+```
+
+## Model Architecture
+
+- **Backbone**: UNet with ResNet blocks and attention layers
+- **Time Embedding**: Learnable sinusoidal positional encoding
+- **Conditioning**: Cell type labels embedded and added to time embedding
+- **Diffusion Steps**: 50 timesteps with linear beta schedule (default)
+- **Training Loss**: Smooth L1 loss on predicted noise
+
+## Project Structure
+
+```
+.
+├── constants.py       # Shared constants
+├── dataloader.py      # Data loading and preprocessing
+├── diffusion.py       # DDPM diffusion model
+├── unet.py           # UNet architecture
+├── layers.py         # Neural network building blocks
+├── utils.py          # Utility functions
+├── train.py          # Training script
+├── infer.py          # Inference script
+├── evaluate.py       # Evaluation script
+└── requirements.txt  # Python dependencies
+```
+
+## Citation
+
+If you use this code, please cite the original DNA-Diffusion paper:
+
+```
+[Add citation here when available]
+```
+
+## License
+
+[Add license information]
